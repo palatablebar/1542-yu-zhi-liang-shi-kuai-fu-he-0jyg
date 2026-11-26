@@ -93,23 +93,27 @@ class ShiftDossier:
         self.forecaster = model_service.fit_model(self.prepared.train,self.feature_stamp.fingerprint)
 
     def grading(self):
+        # Train and calibration windows supply the old and new calibration actuals;
+        # the replay window is never used to fit either version, only to compare them.
         predictions = {}
         for name, points in self.prepared.segments():
-            if name != 'train':
-                predictions[name] = model_service.predict(self.forecaster,points,self.feature_stamp.fingerprint)
-        checked = calibration_service.prepare_verification(predictions['calibration'])
-        return checked, predictions
+            predictions[name] = model_service.predict(self.forecaster,points,self.feature_stamp.fingerprint)
+        versions, incumbent, challenger = calibration_service.choose_versions(
+            predictions['train'], predictions['calibration'], predictions['replay'],
+            scope={point.cohort for point in predictions['live']})
+        return (versions, incumbent, challenger), predictions
 
-    def verification(self, observed, calibration):
-        holdout = calibration_service.validate_predictions(observed['replay'],calibration)
-        assignment = calibration_service.validate_predictions(observed['live'],calibration)
+    def verification(self, observed, versions):
+        table = calibration_service.versions_of(versions)
+        holdout = calibration_service.validate_by_line(observed['replay'],table)
+        assignment = calibration_service.validate_by_line(observed['live'],table)
         prepared = self.prepared
         baseline = monitor_service.fit_baseline(prepared.train,self.feature_stamp.fingerprint)
         detection = monitor_service.scan_current(baseline,prepared.live,self.feature_stamp.fingerprint)
         return holdout, assignment, detection
 
-    def seal(self, plan, mode):
-        return audit_service.close_batch(self.raw_forms,self.accepted,self.history,plan,self.feature_stamp.fingerprint,self.forecaster.name,mode)
+    def seal(self, plan, mode, calibration_id=''):
+        return audit_service.close_batch(self.raw_forms,self.accepted,self.history,plan,self.feature_stamp.fingerprint,self.forecaster.name,mode,calibration_id)
 
 
 def execute(documents, capacity=12, mode='balanced', *, as_of=96):
@@ -118,10 +122,11 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
     if not isinstance(documents,(tuple,list)) or not 1<=len(documents)<=2500:
         raise ValueError('需要 1 至 2500 份可识别单据')
     dossier = ShiftDossier(documents,as_of)
-    fitted_calibration, estimates = dossier.grading()
-    evaluated, checked_live, drift = dossier.verification(estimates,fitted_calibration)
+    (versions, incumbent, challenger), estimates = dossier.grading()
+    evaluated, checked_live, drift = dossier.verification(estimates,versions)
+    table = calibration_service.versions_of(versions)
     allocation = dispatch_service.plan_jobs(checked_live,drift.domain,capacity,mode)
-    closed = dossier.seal(allocation,mode)
+    closed = dossier.seal(allocation,mode,calibration_service.selection_stamp(versions))
     intake,windows,state,features,kernel = dossier.accepted,dossier.history,dossier.feature_stamp,dossier.prepared,dossier.forecaster
     scored = estimates['live']
     performance = calibration_service.performance(evaluated)
@@ -137,8 +142,8 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
     vectors = {item.key: item for item in features.live}
     row_list = rows_for(allocation, scored, vectors)
     operating_rows = dispatch_service.operating_ledger(row_list)
-    overtime = calibration_service.boundary_diagnostics(evaluated, 0.49)
-    sector = calibration_service.sector_replay(evaluated, 0.49)
+    overtime = calibration_service.boundary_diagnostics(evaluated, calibration_service.RISK_THRESHOLD)
+    sector = calibration_service.sector_replay(evaluated, calibration_service.RISK_THRESHOLD)
     operating_shift = monitor_service.shop_floor_shift(features.train, features.live)
     field_evidence = audit_service.sign_field_evidence(row_list, allocation)
     features_glance = feature_service.feature_evidence(state) + feature_service.measure_review(features)
@@ -149,7 +154,7 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
         stage_at(1, f'拟合 {len(windows.train)} 条，校准 {len(windows.calibration)} 条，回放 {len(windows.replay)} 条', cohort_service.window_evidence(windows) + cohort_service.readiness_evidence(windows, as_of)),
         stage_at(2, '特征转换版本 ' + state.fingerprint, features_glance),
         stage_at(3, kernel.name, weight_rows + model_service.inspection_rows(kernel, features) + comparison_rows(scored)),
-        stage_at(4, f'{fitted_calibration.method} · {performance.status} · {performance.count} 条回放实绩', calibration_service.calibration_evidence(performance) + [overtime] + sector),
+        stage_at(4, f'{len(versions)} 条养护线选版 · {performance.status} · {performance.count} 条回放实绩', [calibration_service.plant_holdout(incumbent, challenger, estimates["replay"])] + calibration_service.selection_evidence(versions) + calibration_service.calibration_evidence(performance) + [overtime] + sector),
         stage_at(5, f'{drift.status} · {len(drift.domain)} 张单据需外推判读', monitor_service.shift_evidence(drift, coverage) + operating_shift),
         stage_at(6, f'本班占用 {allocation.capacity-allocation.balance} / {allocation.capacity} 个工位单位', dispatch_service.action_evidence(allocation) + dispatch_service.operating_group(checked_live, allocation)),
         stage_at(7, f'处置凭证 {closed.stamp} · 额度守恒', audit_service.reconciliation_evidence(closed) + field_evidence['执行业务单']),
@@ -159,7 +164,8 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
     points = [{'label': row['key'], 'value': row['estimate'], 'state': row['state'], 'zone': row['zone'],
                'upper': row['interval'], 'cost': row['cost']} for row in sorted(row_list, key=lambda row: row['key'])]
     def estimate(vector):
-        return calibration_service.check_point(model_service.predict_one(kernel, vector), fitted_calibration).estimate
+        anchor = table.get(vector.cohort, calibration_service.UNCALIBRATED)
+        return calibration_service.check_point(model_service.predict_one(kernel, vector), anchor).estimate
 
     # Compare interventions against frozen features, model and calibration;
     # scenario estimates never overwrite the base ticket or its decision.
@@ -171,6 +177,7 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
     details[7]['records'].extend(audit_service.intervention_summary(row_list))
     overview_report = {'capacity' : capacity, 'mode': mode, 'as_of': as_of, 'sample_hash': closed.batch_hash,
               'policy_hash': closed.policy_hash, 'feature_stamp': state.fingerprint,
+              'calibration_stamp': calibration_service.selection_stamp(versions),
               'model': kernel.name, 'run_id': closed.stamp, 'object_name': DISPLAY['object_name'],
               'unit': DISPLAY['unit'], 'sections': details, 'flow_counts': list(states.items()),
               'measures': {'cure_min': ('有效保温', 'min'),

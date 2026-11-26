@@ -17,6 +17,30 @@ class Verification:
 
 
 @dataclass(frozen=True, slots=True)
+class VersionChoice:
+    cohort: str
+    version: str
+    reason: str
+    incumbent: Verification
+    challenger: Verification
+    chosen: Verification
+    holdout: int
+    positives: int
+    incumbent_mae: float | None
+    challenger_mae: float | None
+    incumbent_misses: int | None
+    challenger_misses: int | None
+
+    def __post_init__(self):
+        if not self.cohort or not self.reason:
+            raise ValueError('选版需要养护线和判定原因')
+        if self.version not in ('recent', 'prior'):
+            raise ValueError('未知校准版本')
+        if self.holdout < 0 or not 0 <= self.positives <= self.holdout:
+            raise ValueError('选版回放计数失衡')
+
+
+@dataclass(frozen=True, slots=True)
 class Assessment:
     raw: Prediction
     estimate: float

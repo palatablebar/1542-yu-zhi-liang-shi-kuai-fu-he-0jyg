@@ -19,8 +19,8 @@ def data_fingerprint(records):
     return sha256('\n'.join(lines).encode()).hexdigest()
 
 
-def policy_fingerprint(capacity, mode, feature_id, model_kind):
-    inputs = (POLICY_VERSION, capacity, mode, feature_id, model_kind)
+def policy_fingerprint(capacity, mode, feature_id, model_kind, calibration_id=''):
+    inputs = (POLICY_VERSION, capacity, mode, feature_id, model_kind, calibration_id)
     return sha256(canonical_json(inputs).encode()).hexdigest()[:16]
 
 
@@ -46,10 +46,10 @@ def check_flow(intake, windows, dispatched):
                        dispatched.capacity, consumed, dispatched.balance, tuple(sorted(counts.items())))
 
 
-def close_batch(dataset, intake, windows, dispatched, feature_id, model_kind, mode):
+def close_batch(dataset, intake, windows, dispatched, feature_id, model_kind, mode, calibration_id=''):
     receipt = check_flow(intake, windows, dispatched)
     upstream = data_fingerprint(dataset)
-    version = policy_fingerprint(dispatched.capacity, mode, feature_id, model_kind)
+    version = policy_fingerprint(dispatched.capacity, mode, feature_id, model_kind, calibration_id)
     decisions = tuple((job.key, job.state, job.cost, job.reason, job.estimate) for job in dispatched.jobs)
     verified = sha256(canonical_json((upstream, version, decisions, asdict(receipt))).encode()).hexdigest()[:16]
     return BatchReceipt(verified, upstream, version, receipt, decisions)

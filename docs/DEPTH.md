@@ -30,3 +30,6 @@ AI/ML · 传统ML · 中型
 | TRAP-44 | 校准样本不足 | 分派前转人工判读并保留原因 | `src/beamcure/cube_validation/service.py` | `tests/test_cube_validation.py::test_empty_calibration_requires_review` |
 | TRAP-53 | 单条推断与混批 | 复用冻结参数，各条估计完全一致 | `src/beamcure/strength_classifier/service.py` | `tests/test_strength_classifier.py::test_input_batch_invariance` |
 | TRAP-54 | 特征版本与模型不配对 | 拒绝继续推断并要求重拟合 | `src/beamcure/strength_classifier/service.py` | `tests/test_strength_classifier.py::test_mismatched_model_input_version_fails` |
+| TRAP-55 | 全厂误差下降但某养护线漏报增加 | 该线保留旧版，不随全厂结论切换 | `src/beamcure/cube_validation/service.py` | `tests/test_cube_validation.py::test_plant_error_gain_cannot_add_misses_on_a_line` |
+| TRAP-56 | 某养护线回放缺正常或异常实绩 | 沿用旧版并记录原因，不用未证实的新版出分 | `src/beamcure/cube_validation/service.py` | `tests/test_cube_validation.py::test_line_needs_both_outcomes_before_switching` |
+| TRAP-57 | 新旧版校准接触回放窗 | 旧版只用拟合窗、新版只用校准窗，两者共用未参与校准的回放窗比较 | `src/beamcure/cube_validation/service.py` | `tests/test_cube_validation.py::test_replay_outcomes_never_reach_the_calibration_fit` |

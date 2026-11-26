@@ -75,6 +75,20 @@ def test_future_live_outcome_does_not_move_training_or_estimates():
     assert after['sample_hash'] != before['sample_hash']
 
 
+def test_after_cutoff_outcomes_cannot_enter_the_replay_comparison():
+    # A result arriving after the cutoff is quarantined at intake and must never
+    # reach the shared replay window, so version selection and scoring stay put.
+    dataset = open_fixture()
+    entries = [dict(row) for row in dataset['records']]
+    replay_like = dict(next(row for row in entries if row['day'] == 77))
+    replay_like.update(key='BC-AFTER-QA', day=101, received=120, result_day=121, outcome=0.0)
+    after = execute(entries + [replay_like])
+    before = preview()
+    assert after['calibration_stamp'] == before['calibration_stamp']
+    assert after['sections'][4]['summary'] == before['sections'][4]['summary']
+    assert after['rows'] == before['rows']
+
+
 def test_joint_experiments_change_only_supported_controls():
     report=preview()
     assert any(row['joint_experiments'] for row in report['rows'])
